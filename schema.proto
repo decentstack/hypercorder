@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+// Master feed messages
+/*
+message Epoch {
+  bytes key = 1;
+  uint64 endsAt = 2;
+  // fn readTopic () { Hash(key) }
+  // fn writeTopic() { Hash('w'+key) }
+}*
+
+// A statement, originally appended to a user feed.
+// Then sparsely replicated across a temporary swarm
+// and conditionally be recorded by a moderator/witness
+message Statement {
+  // An officially recorded statement lacking context
+  // can have unintended consequences..
+  // On the other hand, forcing a global name space will
+  // also have consequences. Statements can embed context in app-data
+  // removing the need for a protocol-level header.
+  // This field might be removed in future versions.
+  required string context = 1;
+
+  // Application data
+  required bytes data = 3;
+
+  // The statement signature must exist in order to prove
+  // that a recording/copy was un-altered.
+  required bytes signature = 4; // sign(sk, [context, data, key, sequence])
+  required bytes key = 5; // Author key / Original Feed key
+  required uint32 sequence = 6; // index of this msg in orignal feed.
+
+  // Speculating that the statement format should allow the recorder
+  // to include a footnote.
+  // This field should be enforced empty by non recording peers
+  bytes recording_remark = 7;
+}
+
+/*
+forward-assert:  // conditional relay
+  Stmt.key === Feed.key
+  Stmt.sequence === index of Entry that holds Stmt.
+  Stmt.signature === verify(Stmt.key, [context, data, key, sequence])
+  // At this point we have validated that the Statement truly originates from
+  // the author in it's unaltered form.
+  // Now we should be able to start application-assertions.
+  App.assert(Stmt)
+If forward assertion fails, immediately exclude peer and feed.
+Consequences:
+  - Sharing/Forwarding unverifiable statements should prevent them from
+  being relayed and effectively limit network access for adversaries.
+*/
