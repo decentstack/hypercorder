@@ -10,6 +10,141 @@ var encodings = require('protocol-buffers-encodings')
 var varint = encodings.varint
 var skip = encodings.skip
 
+var Statement = exports.Statement = {
+  buffer: true,
+  encodingLength: null,
+  encode: null,
+  decode: null
+}
+
+defineStatement()
+
+function defineStatement () {
+  Statement.encodingLength = encodingLength
+  Statement.encode = encode
+  Statement.decode = decode
+
+  function encodingLength (obj) {
+    var length = 0
+    if (!defined(obj.context)) throw new Error("context is required")
+    var len = encodings.string.encodingLength(obj.context)
+    length += 1 + len
+    if (!defined(obj.data)) throw new Error("data is required")
+    var len = encodings.bytes.encodingLength(obj.data)
+    length += 1 + len
+    if (!defined(obj.signature)) throw new Error("signature is required")
+    var len = encodings.bytes.encodingLength(obj.signature)
+    length += 1 + len
+    if (!defined(obj.key)) throw new Error("key is required")
+    var len = encodings.bytes.encodingLength(obj.key)
+    length += 1 + len
+    if (!defined(obj.sequence)) throw new Error("sequence is required")
+    var len = encodings.varint.encodingLength(obj.sequence)
+    length += 1 + len
+    if (defined(obj.recording_remark)) {
+      var len = encodings.bytes.encodingLength(obj.recording_remark)
+      length += 1 + len
+    }
+    return length
+  }
+
+  function encode (obj, buf, offset) {
+    if (!offset) offset = 0
+    if (!buf) buf = Buffer.allocUnsafe(encodingLength(obj))
+    var oldOffset = offset
+    if (!defined(obj.context)) throw new Error("context is required")
+    buf[offset++] = 10
+    encodings.string.encode(obj.context, buf, offset)
+    offset += encodings.string.encode.bytes
+    if (!defined(obj.data)) throw new Error("data is required")
+    buf[offset++] = 26
+    encodings.bytes.encode(obj.data, buf, offset)
+    offset += encodings.bytes.encode.bytes
+    if (!defined(obj.signature)) throw new Error("signature is required")
+    buf[offset++] = 34
+    encodings.bytes.encode(obj.signature, buf, offset)
+    offset += encodings.bytes.encode.bytes
+    if (!defined(obj.key)) throw new Error("key is required")
+    buf[offset++] = 42
+    encodings.bytes.encode(obj.key, buf, offset)
+    offset += encodings.bytes.encode.bytes
+    if (!defined(obj.sequence)) throw new Error("sequence is required")
+    buf[offset++] = 48
+    encodings.varint.encode(obj.sequence, buf, offset)
+    offset += encodings.varint.encode.bytes
+    if (defined(obj.recording_remark)) {
+      buf[offset++] = 58
+      encodings.bytes.encode(obj.recording_remark, buf, offset)
+      offset += encodings.bytes.encode.bytes
+    }
+    encode.bytes = offset - oldOffset
+    return buf
+  }
+
+  function decode (buf, offset, end) {
+    if (!offset) offset = 0
+    if (!end) end = buf.length
+    if (!(end <= buf.length && offset <= buf.length)) throw new Error("Decoded message is not valid")
+    var oldOffset = offset
+    var obj = {
+      context: "",
+      data: null,
+      signature: null,
+      key: null,
+      sequence: 0,
+      recording_remark: null
+    }
+    var found0 = false
+    var found1 = false
+    var found2 = false
+    var found3 = false
+    var found4 = false
+    while (true) {
+      if (end <= offset) {
+        if (!found0 || !found1 || !found2 || !found3 || !found4) throw new Error("Decoded message is not valid")
+        decode.bytes = offset - oldOffset
+        return obj
+      }
+      var prefix = varint.decode(buf, offset)
+      offset += varint.decode.bytes
+      var tag = prefix >> 3
+      switch (tag) {
+        case 1:
+        obj.context = encodings.string.decode(buf, offset)
+        offset += encodings.string.decode.bytes
+        found0 = true
+        break
+        case 3:
+        obj.data = encodings.bytes.decode(buf, offset)
+        offset += encodings.bytes.decode.bytes
+        found1 = true
+        break
+        case 4:
+        obj.signature = encodings.bytes.decode(buf, offset)
+        offset += encodings.bytes.decode.bytes
+        found2 = true
+        break
+        case 5:
+        obj.key = encodings.bytes.decode(buf, offset)
+        offset += encodings.bytes.decode.bytes
+        found3 = true
+        break
+        case 6:
+        obj.sequence = encodings.varint.decode(buf, offset)
+        offset += encodings.varint.decode.bytes
+        found4 = true
+        break
+        case 7:
+        obj.recording_remark = encodings.bytes.decode(buf, offset)
+        offset += encodings.bytes.decode.bytes
+        break
+        default:
+        offset = skip(prefix & 7, buf, offset)
+      }
+    }
+  }
+}
+
 function defined (val) {
   return val !== null && val !== undefined && (typeof val !== 'number' || !isNaN(val))
 }

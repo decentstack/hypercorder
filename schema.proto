@@ -7,7 +7,7 @@ message Epoch {
   uint64 endsAt = 2;
   // fn readTopic () { Hash(key) }
   // fn writeTopic() { Hash('w'+key) }
-}*
+}*/
 
 // A statement, originally appended to a user feed.
 // Then sparsely replicated across a temporary swarm

@@ -25,11 +25,13 @@ test.only('As a user i want my statement to be recorded and finalized', async t 
 
     const witness = new Epoch(ram, null, { filter: filterChain })
     witness.once('error', t.error)
+    /*
     witness.once('statement', (stmt) => {
       debugger
       t.ok(stmt)
       witness.finalize()
     })
+    e.on('finalize', t.end)*/
     await witness.ready()
 
     const e = new Epoch(ram, witness.key, { filter: filterChain })
@@ -69,8 +71,8 @@ test.only('As a user i want my statement to be recorded and finalized', async t 
     const id = await finalizedPromise
     t.equal(typeof id, 'number')
     t.ok(e.contains(myFeed.key, seq))
-    e.on('finalize', t.end)
   } catch (e) { t.error(e) }
+  t.end()
 })
 
 // TODO: test invalid statements
