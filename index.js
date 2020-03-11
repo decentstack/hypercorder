@@ -5,6 +5,7 @@ const { ReplicationManager } = require('../hyperplexer')
 const { defer, infer } = require('deferinfer')
 const { Statement } = require('./messages')
 const { sign, verify } = require('hypercore-crypto')
+// const debug = require('debug')('hypercorder')
 
 // Statement magic byte-sequence
 const INVALID_STMT = false
@@ -23,7 +24,7 @@ const magicStatementEncoder = {
   }
 }
 
-module.exports = class Reducer extends Feed {
+module.exports = class Recorder extends Feed {
   constructor (storage, key, opts) {
     super(p => storage('reduced/' + p), key, {
       ...opts,
@@ -37,8 +38,11 @@ module.exports = class Reducer extends Feed {
     this.__fctr = 0
     this.exchange = null
     this._filterFn = opts.filter || (() => true)
+    this._onAuth = opts.onauthenticate || ((key, done) => done(null))
+    this._keepCache = !!opts.keepCache // disables auto-free on recorded statement.
     this._exKey = opts.exchangeKey
-    this._dataEncoding = opts.valueEncoding // TODO: override .get()
+    // TODO: don't discard provided opts.valueEncoding
+    // this._dataEncoding = opts.valueEncoding // TODO: override .get()
     this._finalized = false
     this._shares = {}
     this._recorded = {}
@@ -46,6 +50,7 @@ module.exports = class Reducer extends Feed {
     this._indexEntry = this._indexEntry.bind(this)
     this.on('append', this._indexEntry)
     this.on('download', this._indexEntry)
+    this._announceRecorderUpdated = throttleFn(this._announceRecorderUpdated.bind(this), 1000)
   }
 
   get finalized () { return this._finalized }
@@ -94,10 +99,22 @@ module.exports = class Reducer extends Feed {
       })
     }
 
+    if (Buffer.isBuffer(stmt) && !Recorder.isBinaryStatement(stmt)) {
+      // TODO: obsolete when Hypercore#finalize() is implemented.
+      if (!this.writable && stmt.slice(0, 3).equals(Buffer.from('EOF'))) {
+        debugger
+        this._finalized = true
+        this.emit('finalized', idx)
+      }
+
+      return // Ignore non-statement entries
+    }
+
     // hypercore.on('download') seems to ignore contentEncoding..
     if (Buffer.isBuffer(stmt)) stmt = magicStatementEncoder.decode(stmt)
 
-    if (!stmt.key || !stmt.signature) debugger // This should never happen.
+    // Does it quack like a statement?
+    if (!stmt.key || !stmt.signature) return this.emit('error', new Error('Not a Statment'))
 
     const mk = stmt.key.toString('hex')
     if (!this._recorded[mk]) this._recorded[mk] = {}
@@ -105,10 +122,44 @@ module.exports = class Reducer extends Feed {
 
     // Resolve pending
     const share = this._shares[mk]
-
     if (share && share.resolve) share.resolve(null, idx)
+
+    // Unshare
+    this._freeCache(idx, stmt.key)
+      .catch(this.emit.bind(this, 'error'))
+
     // Emit statement recorded event.
-    this.emit('statement', stmt)
+    this.emit('statement', stmt, idx)
+  }
+
+  _freeCache (idx, key) {
+    if (this._keepCache) return
+    const mk = key.toString('hex')
+    const share = this._shares[mk]
+    if (!share) return Promise.resolve(false) // Nothing shared? No prob, nothing to free!
+
+    delete share.indices[idx]
+
+    // Locally borrowed feeds are not ours to purge
+    if (share.local) return Promise.resolve(false)
+
+    if (!(share.feed instanceof Feed)) return Promise.resolve(false)
+
+    return Promise.resolve(true) // TODO..
+    return defer(done => process.nextTick(done))
+      .then(() => defer(done => share.feed.clear(idx, done)))
+      .then(() => {
+        const isEmpty = !share.feed.downloaded(0, share.feed.length)
+        const nothingShared = !Object.keys(share.indices).length
+        if (nothingShared && isEmpty) {
+          // TODO: gracefully close all open channels for this feed.
+          // E.g. share.feed.peers => [Peer, Peer]
+          // or this.exchange.stopReplicating(share.feed.key)
+          // Causes 'closed' error to be thrown atm.
+          return true
+          return defer(done => share.feed.destroy(done))
+        }
+      })
   }
 
   _initHyperplexer () {
@@ -122,6 +173,7 @@ module.exports = class Reducer extends Feed {
 
     this.exchange = new ReplicationManager(this._exKey, {
       onerror: this.emit.bind(null, 'error'),
+      onauthenticate: this._onAuth,
       ondisconnect: (err, conn) => {
         if (err) return this.emit('error', err)
       },
@@ -140,24 +192,19 @@ module.exports = class Reducer extends Feed {
             }
           }
         })
+        // Add the main feed and mark it as being live
+        // and kept open for the duration of the connection.
         feeds.unshift({
           key: this.key,
+          // live: true,
           headers: { master_record: true, finalized: this.finalized, version: this.length }
         })
         this.exchange.share(peer, feeds, { namespace: 'default' })
       },
-      /*
-      onauthenticate (pk, done, peer) {
-        debugger
-        done()
-      },
-      */
-      onforward: (namespace, key, candidates) => {
-        debugger
-        for (const peer of candidates) {
-          this.exchange.share(peer, { namespace, keys: [key] })
-        }
-      },
+
+      // no onforward. We have to validate content before relaying.
+      /* onforward: (namespace, key, candidates) => {
+      },*/
 
       resolve: ({ key, namespace }, resolve) => {
         if (this.key.equals(key)) resolve(this)
@@ -165,10 +212,12 @@ module.exports = class Reducer extends Feed {
       },
 
       onaccept: ({ key, headers, peer, namespace }, accept) => {
+        // always accept master feed.
         if (this.key.equals(key)) return accept(true)
         // Reject all side-records if master feed is finalized.
         if (this.finalized) return accept(false)
 
+        if (!Array.isArray(headers.statements)) debugger
         // Ignore unknown feeds
         if (!Array.isArray(headers.statements)) return accept(false)
 
@@ -192,9 +241,13 @@ module.exports = class Reducer extends Feed {
           return have && !!share.indices[idx]
         }, true)
 
+        const remoteHas = headers.statements.reduce((map, idx) => {
+          map[idx] = 1
+          return map
+        }, {})
+
         const noUnique = Object.keys(share.indices).reduce((have, idx) => {
-          debugger
-          return have && !!share.indices[idx]
+          return have && !!remoteHas[idx]
         }, true)
 
         // noNew = localHaveAll, noUnique = remoteHasAll
@@ -217,7 +270,7 @@ module.exports = class Reducer extends Feed {
 
         return accept(true)
       }
-    })
+    }, { live: true })
   }
 
   /**
@@ -237,8 +290,9 @@ module.exports = class Reducer extends Feed {
     }
   } */
 
+  // TODO: omg gotta rename this to reduce() or something.
   repliduce (initator, opts) {
-    if (this.finalized) throw new Error('We`re closed')
+    // if (this.finalized) throw new Error('Finalized')
     return this.exchange.replicate(initator, opts)
   }
 
@@ -249,42 +303,78 @@ module.exports = class Reducer extends Feed {
   }
 
   _verifyBlock (feed, idx, data) { // maybe peer as param also.
-    const stmt = Reducer.decodeVerify(feed.key, data)
+    const stmt = Recorder.decodeVerify(feed.key, data)
     if (!stmt && stmt.sequence !== idx) return this._expunge(feed, idx)
     // TODO: decode stmt.data using ops.contentEncoding if available.
     if (!this._filterFn(stmt)) return this._expunge(feed, idx)
 
     // Block is approved, append it to shares and forward || record.
     const mk = feed.key.toString('hex')
-    this._shares[mk].indices[idx] = true
+    const share = this._shares[mk]
+    share.indices[idx] = true
 
     if (!this.writable) { // We're just another peer
-      // TODO: Forward announce
-      debugger
-    } else {
+      if (this.contains(feed.key, idx)) return // Don't share recorded statements
+      const meta = {
+        key: feed.key,
+        headers: {
+          statements: Object.keys(share.indices)
+            .filter(n => share.indices[n])
+            .map(n => parseInt(n))
+        }
+      }
+      if (!meta.headers.statements) debugger
+      for (const peer of this.exchange.peers) {
+        // TODO: Don't share to peer that gave us this statement.
+        this.exchange.share(peer, [meta], { namespace: 'default' })
+      }
+    } else if (!this._finalized) {
       // We're acting as witness, record the statement.
+      console.error('Recording STMT:',
+        stmt.context,
+        `${stmt.key.toString('hex').substr(0, 6)}@${stmt.sequence}`)
       this.append(data, err => {
         if (err) return this.emit('error', err)
-        // Notify all connected peers that a new version is available.
-        // This can be done automatically if hyperplexer supported
-        // manual force resolve/share live-flag.
-
-        // TODO: replace with mgr.broadcast()
-        const meta = {
-          key: this.key,
-          headers: { master_record: true, finalized: this.finalized, version: this.length }
-        }
-        for (const peer of this.exchange.peers) {
-          this.exchange.share(peer, [meta], { namespace: 'default' })
-        }
+        else this._announceRecorderUpdated().catch(this.emit.bind(this, 'error'))
       })
     }
   }
 
+  _announceRecorderUpdated () {
+    // Notify all connected peers that a new version is available.
+    const meta = {
+      key: this.key,
+      // live: true,
+      headers: { master_record: true, finalized: this.finalized, version: this.length }
+    }
+    // TODO: replace with mgr.broadcast()
+    for (const peer of this.exchange.peers) {
+      // If the masterfeed is actively replicated with peer.
+      // then hyper-protocol will signal the availablity of a new entry.
+      // and we don't have to do anything here.
+      if (peer.isActive(this.key)) continue
+
+      // Otherwise we'll gently notify the other peer that our
+      // master feed contains new entries.
+      this.exchange.share(peer, [meta], { namespace: 'default' })
+    }
+  }
+
+  finalize (cb) {
+    if (!cb) cb = err => err ? this.emit('error', err) : 0
+
+    if (!this.writable || this._finalized) throw new Error('FEED_READ_ONLY')
+
+    this.append(Buffer.from('EOF', 'utf8'), err => {
+      if (err) return cb(err)
+      this._finalized = true
+      this.emit('finalized', this.length)
+    })
+  }
   // -- STATIC CRYPTO & SERIALIZATION -- //
 
   static appendStatement (feed, context, data, cb = null) {
-    const buf = Reducer.createStatement(feed.secretKey, feed.length, context, data)
+    const buf = Recorder.createStatement(feed.secretKey, feed.length, context, data)
     const p = defer(done => feed.append(buf, done))
     return infer(p, cb)
   }
@@ -323,7 +413,7 @@ module.exports = class Reducer extends Feed {
   static verifyFeedEntry (feed, idx, cb = null) {
     const p = defer(done => feed.get(idx, done))
       .then(entry => {
-        const stmt = Reducer.decodeVerify(feed.key, entry)
+        const stmt = Recorder.decodeVerify(feed.key, entry)
         if (stmt === INVALID_STMT) return INVALID_STMT
         if (stmt.sequence !== idx) return INVALID_STMT
         return stmt
@@ -332,7 +422,7 @@ module.exports = class Reducer extends Feed {
   }
 
   static decodeVerify (pkey, buf, offset = 0, end) {
-    const stmt = Reducer.decodeStatement(buf, offset, end)
+    const stmt = Recorder.decodeStatement(buf, offset, end)
     if (!pkey.equals(stmt.key)) return INVALID_STMT
 
     // TODO: check sodium docs for in-place signing avoiding Buffer.concat
@@ -353,6 +443,11 @@ module.exports = class Reducer extends Feed {
     if (!STATEMENT_MAGIC.equals(buf.slice(offset, STATEMENT_MAGIC.length))) throw new Error('Not a Statement or Magic header missing')
     return Statement.decode(buf, offset + STATEMENT_MAGIC.length, end)
   }
+
+  static isBinaryStatement (buf, offset = 0) {
+    return Buffer.isBuffer(buf) &&
+      buf.slice(offset, STATEMENT_MAGIC.length).equals(STATEMENT_MAGIC)
+  }
 }
 
 module.exports.STATEMENT_MAGIC = STATEMENT_MAGIC
@@ -366,4 +461,23 @@ function parsePtr (key, idx) {
   }
   if (!Number.isInteger(idx)) throw new Error('second argumentd "idx" must be an integer')
   return { key, idx }
+}
+
+// Awesomesauce tuesday!
+function throttleFn (fn, interval, risingEdge = false) {
+  let t = false
+  let r = null
+  const reset = () => {
+    if (!risingEdge) r(fn())
+    t = false
+    r = null
+  }
+  return (...a) => {
+    if (!t) {
+      t = defer(d => { r = d })
+      setTimeout(reset, interval)
+      if (risingEdge) r(fn(...a))
+    }
+    return t
+  }
 }
