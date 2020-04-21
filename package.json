@@ -1,5 +1,5 @@
 {
-  "name": "hyperduce",
+  "name": "hypercorder",
   "version": "0.0.1",
   "description": "many-to-one feed reducing data structure",
   "main": "index.js",
@@ -29,7 +29,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/telamon/hyperduce.git"
+    "url": "git+https://github.com/decentstack/hypercorder.git"
   },
   "keywords": [],
   "author": {
@@ -38,7 +38,7 @@
   },
   "license": "AGPL-3.0-or-later",
   "bugs": {
-    "url": "https://github.com/telamon/hyperduce/issues"
+    "url": "https://github.com/decentstack/hypercorder/issues"
   },
-  "homepage": "https://github.com/telamon/hyperduce#readme"
+  "homepage": "https://github.com/decentstack/hypercorder#readme"
 }
